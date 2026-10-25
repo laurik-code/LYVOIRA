@@ -1,0 +1,22 @@
+# Dependencies and builds
+node_modules/
+**/.next/
+out/
+build/
+coverage/
+
+# Local configuration (never commit secrets)
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Logs and credentials
+*.log
+*.pem
+*.key
+*.p12
+*.pfx
+.DS_Store
+.vercel/
+*.tsbuildinfo
