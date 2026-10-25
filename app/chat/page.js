@@ -257,12 +257,35 @@ function ChatWidgetContent() {
     let cancelled = false;
 
     const init = async () => {
-      let uid = safeLocal.get("lyvoira_user_id");
-      if (!uid) {
-        uid = "user_" + Math.random().toString(36).substring(2, 9);
-        safeLocal.set("lyvoira_user_id", uid);
+      // Identita návštevníka sa overuje na serveri pomocou HttpOnly cookie.
+      // localStorage slúži len ako pomocný údaj pre ostatné časti aplikácie.
+      let uid;
+      try {
+        const sessionRes = await fetch("/api/chat-session", {
+          credentials: "same-origin",
+          cache: "no-store",
+        });
+
+        if (!sessionRes.ok) {
+          throw new Error(`Chat session HTTP ${sessionRes.status}`);
+        }
+
+        const sessionData = await sessionRes.json();
+        uid = sessionData?.user_id;
+
+        if (!sessionData?.success || !uid) {
+          throw new Error("Chat session nevrátila platné user_id.");
+        }
+      } catch (err) {
+        console.error("[CHAT SESSION] ❌", err);
+        if (!cancelled) {
+          setErrorMsg("Nepodarilo sa inicializovať chat. Obnov stránku.");
+        }
+        return;
       }
+
       if (cancelled) return;
+      safeLocal.set("lyvoira_user_id", uid);
       setUserId(uid);
 
       const cidFromUrl = searchParams?.get("cid");

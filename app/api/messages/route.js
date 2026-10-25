@@ -1,98 +1,103 @@
+
 import { verifyAdminCookie } from "../../../lib/admin-auth";
-// app/api/messages/route.js
+import { verifyChatSession } from "../../../lib/chat-session";
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import crypto from "crypto";
 
-/**
- * Klienti:
- *  - anonClient: bežné operácie (RLS ON)
- *  - serviceClient: iba pre ADMIN (RLS BYPASSED) – potrebuje SERVICE ROLE KEY
- */
-const anonClient = createClient(
-  process.env.NEXT_PUBLIC_SUPABASE_URL,
-  process.env.NEXT_PUBLIC_SUPABASE_KEY
-);
+const serviceClient = process.env.SUPABASE_SERVICE_ROLE_KEY
+  ? createClient(
+      process.env.NEXT_PUBLIC_SUPABASE_URL,
+      process.env.SUPABASE_SERVICE_ROLE_KEY
+    )
+  : null;
 
-const serviceClient =
-  process.env.SUPABASE_SERVICE_ROLE_KEY
-    ? createClient(
-        process.env.NEXT_PUBLIC_SUPABASE_URL,
-        process.env.SUPABASE_SERVICE_ROLE_KEY
-      )
-    : null;
-
-/** Overenie admin cookie */
-
-
-/**
- * GET /api/messages
- * - ADMIN (platná cookie): vráti všetky správy (DESC by created_at)
- * - USER (bez cookie): musí poslať ?user_id=… (voliteľne &conversation_id=…)
- */
 export async function GET(req) {
   try {
-    const url = new URL(req.url);
-    const user_id = url.searchParams.get("user_id");
-    const conversation_id = url.searchParams.get("conversation_id") || null;
-
-    const isAdmin = verifyAdminCookie(req);
-
-    // ADMIN → potrebuje serviceClient
-    if (isAdmin) {
-      if (!serviceClient) {
-        return NextResponse.json(
-          { success: false, error: "Server not configured (SERVICE ROLE missing)." },
-          { status: 500 }
-        );
-      }
-      let q = serviceClient
-        .from("messages")
-        .select("*")
-        .order("created_at", { ascending: false });
-
-      if (user_id) q = q.eq("user_id", user_id);
-      if (conversation_id) q = q.eq("conversation_id", conversation_id);
-
-      const { data, error } = await q;
-      if (error) throw error;
-      return NextResponse.json({ success: true, data });
+    if (!serviceClient) {
+      return NextResponse.json(
+        { success: false, error: "Server configuration missing." },
+        { status: 500 }
+      );
     }
 
-    // USER → vyžadujeme user_id
-    if (!user_id) {
+    const url = new URL(req.url);
+    const requestedUserId = url.searchParams.get("user_id");
+    const conversationId = url.searchParams.get("conversation_id");
+
+    const isAdmin = verifyAdminCookie(req);
+    const sessionUserId = isAdmin ? null : verifyChatSession(req);
+
+    if (!isAdmin && !sessionUserId) {
       return NextResponse.json(
-        { success: false, error: "Missing user_id or admin rights." },
+        { success: false, error: "Chat session required." },
         { status: 401 }
       );
     }
 
-    let q = anonClient
-      .from("messages")
-      .select("*")
-      .eq("user_id", user_id)
-      .order("created_at", { ascending: true });
+    if (
+      !isAdmin &&
+      requestedUserId &&
+      requestedUserId !== sessionUserId
+    ) {
+      return NextResponse.json(
+        { success: false, error: "Access denied." },
+        { status: 403 }
+      );
+    }
 
-    if (conversation_id) q = q.eq("conversation_id", conversation_id);
+    let query = serviceClient.from("messages").select("*");
 
-    const { data, error } = await q;
+    if (isAdmin) {
+      if (requestedUserId) {
+        query = query.eq("user_id", requestedUserId);
+      }
+    } else {
+      query = query.eq("user_id", sessionUserId);
+    }
+
+    if (conversationId) {
+      query = query.eq("conversation_id", conversationId);
+    }
+
+    query = query.order("created_at", {
+      ascending: !isAdmin,
+    });
+
+    const { data, error } = await query;
+
     if (error) throw error;
+
     return NextResponse.json({ success: true, data });
-  } catch (err) {
-    console.error("[MESSAGES GET] ❌", err);
+  } catch (error) {
+    console.error("[MESSAGES GET]", error);
+
     return NextResponse.json(
-      { success: false, error: err.message },
+      { success: false, error: "Could not load messages." },
       { status: 500 }
     );
   }
 }
 
-/**
- * POST /api/messages
- */
 export async function POST(req) {
   try {
+    if (!serviceClient) {
+      return NextResponse.json(
+        { success: false, error: "Server configuration missing." },
+        { status: 500 }
+      );
+    }
+
+    const sessionUserId = verifyChatSession(req);
+
+    if (!sessionUserId) {
+      return NextResponse.json(
+        { success: false, error: "Chat session required." },
+        { status: 401 }
+      );
+    }
+
     const body = await req.json();
+
     const {
       user_id,
       conversation_id = null,
@@ -102,47 +107,49 @@ export async function POST(req) {
       file_url = null,
     } = body || {};
 
-    if (!user_id || !sender) {
+    if (user_id !== sessionUserId) {
       return NextResponse.json(
-        { success: false, error: "Missing required fields: user_id, sender." },
-        { status: 400 }
+        { success: false, error: "Access denied." },
+        { status: 403 }
       );
     }
-    if (!message?.trim() && !file_url) {
+
+    if (!["user", "ai"].includes(sender)) {
       return NextResponse.json(
-        { success: false, error: "Message must include text or file_url." },
+        { success: false, error: "Invalid sender." },
         { status: 400 }
       );
     }
 
-    const { data, error } = await anonClient
+    if (!message?.trim() && !file_url) {
+      return NextResponse.json(
+        { success: false, error: "Message or file required." },
+        { status: 400 }
+      );
+    }
+
+    const { data, error } = await serviceClient
       .from("messages")
-      .insert([
-        {
-          user_id,
-          conversation_id,
-          language,
-          sender,
-          message: message?.trim() || null,
-          file_url: file_url || null,
-        },
-      ])
+      .insert({
+        user_id: sessionUserId,
+        conversation_id,
+        language,
+        sender,
+        message: message?.trim() || null,
+        file_url: file_url || null,
+        shop_id: process.env.NEXT_PUBLIC_SHOP_ID || null,
+      })
       .select()
       .single();
 
     if (error) throw error;
 
-    console.log(
-      "[MESSAGES POST] saved row id:",
-      data?.id,
-      "file_url:",
-      data?.file_url
-    );
     return NextResponse.json({ success: true, data });
-  } catch (err) {
-    console.error("[MESSAGES POST] ❌ Error:", err);
+  } catch (error) {
+    console.error("[MESSAGES POST]", error);
+
     return NextResponse.json(
-      { success: false, error: err.message },
+      { success: false, error: "Could not save message." },
       { status: 500 }
     );
   }
