@@ -919,7 +919,7 @@ function ChatWidgetContent() {
         body: JSON.stringify({
           shop_id:
             safeLocal.get("lyvoira_shop_id") ||
-            "bc4d82ee-6466-4ce8-99ca-841752c024c3",
+            process.env.NEXT_PUBLIC_SHOP_ID || null,
           history: historyForApi,
           browserLanguage,
         }),

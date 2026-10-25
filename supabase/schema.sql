@@ -1,8 +1,11 @@
--- LYVOIRA Supabase schema reconstructed from actual exported columns, PK/FK/indexes.
+-- LYVOIRA Supabase schema: original 15 tables + demo orders table.
+-- Reconstructed from exported database metadata; data rows are NOT included.
 -- For a NEW, EMPTY Supabase project ONLY. Never execute against the original project.
--- SECURITY: RLS enabled without anon/auth policies; some app features may need
+-- SECURITY: RLS enabled without anon/auth policies; some app features WILL need
 -- server-side auth/storage policy adjustments. This is not integration-tested.
-create extension if not exists vector with schema extensions;
+-- Install pgvector in public so the type below matches the fresh project.
+-- Original export: extension vector installed in public (v0.8.0).
+create extension if not exists vector with schema public;
 
 create table public."chat_photo" (
     "id" uuid default gen_random_uuid() not null,
@@ -89,7 +92,7 @@ create table public."policy_chunks" (
     "id" uuid default gen_random_uuid() not null,
     "shop_id" uuid,
     "doc_id" uuid,
-    "embedding" extensions.vector(1536),
+    "embedding" public.vector(1536),
     "created_at" timestamptz default now(),
     "chunk_index" integer,
     "text" text,
@@ -210,6 +213,35 @@ create index "policy_chunks_shop_idx" on public."policy_chunks" using btree (sho
 create index "idx_shop_policies_shop_lang" on public."shop_policies" using btree (shop_id, lang);
 create index "shop_themes_theme_key_idx" on public."shop_themes" using btree (theme_key);
 
+-- Original database has these two update timestamp triggers.
+create or replace function public.set_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create or replace function public.set_shop_themes_updated_at()
+returns trigger
+language plpgsql
+as $$
+begin
+  new.updated_at = now();
+  return new;
+end;
+$$;
+
+create trigger trg_claims_updated_at
+before update on public.claims
+for each row execute function public.set_updated_at();
+
+create trigger trg_shop_themes_updated_at
+before update on public.shop_themes
+for each row execute function public.set_shop_themes_updated_at();
+
 -- RLS is intentionally restrictive for a fresh deployment.
 -- The original project has unsafe broad anon grants; do not copy those policies.
 alter table public."chat_photo" enable row level security;
@@ -237,3 +269,21 @@ insert into storage.buckets (id, name, public) values
   ('chat-files','chat-files',false),
   ('evidence','evidence',false)
 on conflict (id) do nothing;
+
+-- Demo order verification. This table is not part of the original 15-table export.
+-- It is added for the app/api/orders/verify endpoint.
+-- Never insert real customer data in the portfolio demo.
+create table public.orders (
+    order_id text primary key,
+    user_email text not null,
+    created_at timestamptz not null default now(),
+    constraint orders_order_id_nonempty check (length(btrim(order_id)) > 0),
+    constraint orders_user_email_nonempty check (length(btrim(user_email)) > 0)
+);
+
+create index orders_user_email_idx on public.orders (user_email);
+alter table public.orders enable row level security;
+-- No anon/auth SELECT policy: verification uses a server-only service-role client.
+-- Example fake data (optional, insert manually in a fresh demo DB):
+-- insert into public.orders (order_id, user_email)
+-- values ('DEMO-1001', 'demo@example.com');

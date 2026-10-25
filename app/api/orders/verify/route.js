@@ -1,7 +1,10 @@
 import { NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 
-const supabase = createClient(process.env.SUPABASE_URL, process.env.SUPABASE_KEY);
+// Use the public/anon key: order verification must not use a service-role key.
+const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || process.env.SUPABASE_URL;
+const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_KEY || process.env.SUPABASE_KEY;
+
 
 export async function POST(req) {
   try {
@@ -9,6 +12,10 @@ export async function POST(req) {
     if (!order_id || !user_email) {
       return NextResponse.json({ valid: false, reason: "Missing fields" }, { status: 400 });
     }
+    if (!supabaseUrl || !supabaseAnonKey) {
+      return NextResponse.json({ valid: false, error: "Supabase is not configured" }, { status: 503 });
+    }
+    const supabase = createClient(supabaseUrl, supabaseAnonKey);
     const { data, error } = await supabase
       .from("orders")
       .select("order_id")
@@ -21,6 +28,6 @@ export async function POST(req) {
 
     return NextResponse.json({ valid: !!data });
   } catch (e) {
-    return NextResponse.json({ valid: false, error: e.message }, { status: 500 });
+    return NextResponse.json({ valid: false, error: "Order verification failed" }, { status: 500 });
   }
 }
